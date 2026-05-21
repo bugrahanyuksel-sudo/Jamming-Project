@@ -1,0 +1,43 @@
+name: Sync to Bitbucket
+
+on:
+  push:
+    branches:
+      - main
+  delete:
+  pull_request:
+    types: [synchronize]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: github.repository == 'Trimble-Agentic/agentic-platform-ui-react19-iframe-example'
+    env:
+      BB_USERNAME: ${{ secrets.BB_USERNAME }}
+      BB_TOKEN: ${{ secrets.BB_TOKEN }}
+      BB_HOST_URL: ${{ secrets.BB_HOST_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Add Bitbucket remote
+        run: |
+          git remote add bitbucket https://$BB_USERNAME:$BB_TOKEN@$BB_HOST_URL/scm/ta-innersource/agentic-platform-ui-react19-iframe-example.git
+
+      - name: Push branch change to Bitbucket
+        if: github.event_name == 'push'
+        run: |
+          git push bitbucket ${{ github.event.ref }}:${{ github.event.ref }} --force
+
+      - name: Push PR branch to Bitbucket
+        if: github.event_name == 'pull_request'
+        run: |
+          git push bitbucket HEAD:refs/heads/${{ github.head_ref }} --force
+
+      - name: Push branch delete to Bitbucket
+        if: github.event_name == 'delete'
+        run: |
+          git push bitbucket --delete ${{ github.event.ref }}

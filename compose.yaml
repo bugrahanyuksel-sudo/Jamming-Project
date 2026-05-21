@@ -1,0 +1,6 @@
+services:
+  jammingproject:
+    image: jammingproject
+    build:
+      context: .
+      dockerfile: ./Dockerfile
