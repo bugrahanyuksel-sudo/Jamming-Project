@@ -1,10 +1,15 @@
 import base64
+import os
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict
+from uuid import uuid4
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from main import run_detection
+from main import run_detection, run_detection_summary
 
 app = FastAPI(
     title="Jamming Detection API",
@@ -12,7 +17,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 WEBSITE_PATH = Path(__file__).with_name("website.jsx")
+_ASSISTANT_UPLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
+_LATEST_ASSISTANT_UPLOAD_ID: str | None = None
+_MAX_ASSISTANT_UPLOADS = 20
 
 
 def _load_website() -> str:
@@ -30,6 +51,107 @@ def _load_website() -> str:
 def health():
     """Liveness check — useful for n8n connectivity tests."""
     return {"status": "ok"}
+
+
+@app.get("/trimble-assist-config")
+def trimble_assist_config():
+    """Frontend-safe Trimble Assist embed app URL."""
+    app_url = os.getenv("TRIMBLE_ASSIST_APP_URL", "http://localhost:5173").strip()
+    return {
+        "enabled": bool(app_url),
+        "appUrl": app_url,
+    }
+
+
+def _format_assistant_summary_text(summary: Dict[str, Any], file_name: str) -> str:
+    targets = summary.get("targets", [])
+    target_lines = []
+    for t in targets:
+        target_lines.append(
+            f"- {t.get('targetFrequencyMHz', 0):.2f} MHz: "
+            f"{t.get('mergedDetections', 0)} merged detections, "
+            f"avg signal ~{t.get('avgSignalStrengthPercent', 0)}%"
+        )
+
+    lines = [
+        f"Spectrogram analysis completed for {file_name}.",
+        f"Image size: {summary.get('imageWidth', '?')}x{summary.get('imageHeight', '?')} px.",
+        f"Frequency window: {summary.get('frequencyRangeMHz', ['?', '?'])[0]}-{summary.get('frequencyRangeMHz', ['?', '?'])[1]} MHz.",
+        f"Hot-pixel ratio: {summary.get('hotPixelRatioPercent', 0)}%.",
+        f"Total merged detections: {summary.get('totalMergedDetections', 0)}.",
+        "Per target:",
+        *target_lines,
+    ]
+    return "\n".join(lines)
+
+
+@app.post("/assistant/upload-image")
+async def assistant_upload_image(file: UploadFile = File(..., description="Spectrogram image for assistant context")):
+    """Store uploaded image once so assistant tools can analyze it later."""
+    global _LATEST_ASSISTANT_UPLOAD_ID
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    upload_id = str(uuid4())
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    _ASSISTANT_UPLOAD_CACHE[upload_id] = {
+        "fileName": file.filename or "uploaded_spectrogram",
+        "contentType": file.content_type or "application/octet-stream",
+        "imageBytes": image_bytes,
+        "uploadedAt": uploaded_at,
+        "sizeBytes": len(image_bytes),
+    }
+    _LATEST_ASSISTANT_UPLOAD_ID = upload_id
+
+    # Keep bounded memory usage.
+    if len(_ASSISTANT_UPLOAD_CACHE) > _MAX_ASSISTANT_UPLOADS:
+        oldest_id = next(iter(_ASSISTANT_UPLOAD_CACHE.keys()))
+        _ASSISTANT_UPLOAD_CACHE.pop(oldest_id, None)
+
+    return {
+        "uploadId": upload_id,
+        "fileName": _ASSISTANT_UPLOAD_CACHE[upload_id]["fileName"],
+        "uploadedAt": uploaded_at,
+        "sizeBytes": len(image_bytes),
+    }
+
+
+@app.post("/assistant/analyze-upload")
+async def assistant_analyze_upload(request: Request):
+    """Analyze latest (or provided) uploaded image and return text + structured summary."""
+    global _LATEST_ASSISTANT_UPLOAD_ID
+
+    payload: Dict[str, Any] = {}
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+
+    upload_id = payload.get("uploadId") or _LATEST_ASSISTANT_UPLOAD_ID
+    if not upload_id:
+        raise HTTPException(status_code=404, detail="No uploaded image found. Upload an image in Spectrogram Intake first.")
+
+    item = _ASSISTANT_UPLOAD_CACHE.get(str(upload_id))
+    if not item:
+        raise HTTPException(status_code=404, detail="Upload ID not found. Please upload again.")
+
+    try:
+        summary = run_detection_summary(item["imageBytes"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    summary_text = _format_assistant_summary_text(summary, item["fileName"])
+    return {
+        "uploadId": upload_id,
+        "fileName": item["fileName"],
+        "uploadedAt": item["uploadedAt"],
+        "summary": summary,
+        "summaryText": summary_text,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -1,5 +1,5 @@
 import io
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -89,7 +89,7 @@ def _build_hot_mask(hsv: np.ndarray) -> np.ndarray:
     return cv2.bitwise_or(cv2.bitwise_or(m1, m2), m3)
 
 
-def _process_image(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _process_image(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """
     Core detection logic.
 
@@ -101,15 +101,22 @@ def _process_image(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     -------
     output_img : annotated BGR array
     mask_viz   : coloured detection-mask BGR array (same size as img)
+    summary    : structured detection summary for API/tool consumption
     """
     output_img = img.copy()
     height, width = img.shape[:2]
+
+    if width < 260 or height < 120:
+        raise ValueError("Image is too small for calibrated spectrogram detection.")
 
     # --- CALIBRATION ---
     PLOT_X_START = 60
     PLOT_X_END = width - 150
 
     roi_y1, roi_y2 = 40, height - 60
+    if PLOT_X_END <= PLOT_X_START or roi_y2 <= roi_y1:
+        raise ValueError("Image dimensions are incompatible with the detector calibration window.")
+
     plot_area = img[roi_y1:roi_y2, PLOT_X_START:PLOT_X_END]
 
     hsv = cv2.cvtColor(plot_area, cv2.COLOR_BGR2HSV)
@@ -148,6 +155,9 @@ def _process_image(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         if idx >= 0:
             buckets[idx].append((true_x, true_y, w, h))
 
+    merged_counts: Dict[int, int] = {i: 0 for i in range(len(TARGET_SIGNALS))}
+    strength_buckets: Dict[int, List[int]] = {i: [] for i in range(len(TARGET_SIGNALS))}
+
     # Draw merged boxes with per-target colour and signal-strength label
     for idx, raw_boxes in buckets.items():
         if not raw_boxes:
@@ -158,11 +168,13 @@ def _process_image(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         placed_label_ys: List[int] = []
 
         for (tx, ty, tw, th) in _merge_boxes(raw_boxes):
+            merged_counts[idx] += 1
             cv2.rectangle(output_img, (tx, ty), (tx + tw, ty + th), color, 2)
 
             # Estimate signal strength as mean brightness of the detection patch
             patch = img[ty:ty + th, tx:tx + tw]
             strength = int(cv2.mean(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))[0] / 255 * 100) if patch.size else 0
+            strength_buckets[idx].append(strength)
 
             label = f"{target_freq:.2f} MHz  pwr~{strength}%"
 
@@ -185,7 +197,31 @@ def _process_image(img: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     mask_viz = np.zeros_like(img)
     mask_viz[roi_y1:roi_y2, PLOT_X_START:PLOT_X_END] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
 
-    return output_img, mask_viz
+    roi_area = max(1, (roi_y2 - roi_y1) * (PLOT_X_END - PLOT_X_START))
+    hot_pixels = int(cv2.countNonZero(mask))
+
+    per_target: List[Dict[str, Any]] = []
+    for i, target_freq in enumerate(TARGET_SIGNALS):
+        strengths = strength_buckets[i]
+        per_target.append({
+            "targetFrequencyMHz": float(target_freq),
+            "rawDetections": len(buckets[i]),
+            "mergedDetections": int(merged_counts[i]),
+            "avgSignalStrengthPercent": round(float(sum(strengths) / len(strengths)), 1) if strengths else 0.0,
+            "maxSignalStrengthPercent": max(strengths) if strengths else 0,
+        })
+
+    summary: Dict[str, Any] = {
+        "imageWidth": int(width),
+        "imageHeight": int(height),
+        "frequencyRangeMHz": [float(FREQ_MIN), float(FREQ_MAX)],
+        "targetBandwidthMHz": float(BANDWIDTH),
+        "hotPixelRatioPercent": round((hot_pixels / roi_area) * 100.0, 3),
+        "totalMergedDetections": int(sum(merged_counts.values())),
+        "targets": per_target,
+    }
+
+    return output_img, mask_viz, summary
 
 
 def _build_legend(fig: plt.Figure) -> None:
@@ -231,7 +267,7 @@ def run_detection(image_bytes: bytes) -> bytes:
     if img is None:
         raise ValueError("Could not decode image bytes — unsupported format or corrupt data.")
 
-    output_img, mask_viz = _process_image(img)
+    output_img, mask_viz, _ = _process_image(img)
     fig = _make_figure(img, output_img, mask_viz)
 
     buf = io.BytesIO()
@@ -241,6 +277,17 @@ def run_detection(image_bytes: bytes) -> bytes:
     return buf.read()
 
 
+def run_detection_summary(image_bytes: bytes) -> Dict[str, Any]:
+    """Return structured summary of detections for assistant/tool consumption."""
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Could not decode image bytes — unsupported format or corrupt data.")
+
+    _, _, summary = _process_image(img)
+    return summary
+
+
 def detect_specific_jamming(image_path: str):
     """CLI entry point — reads a file from disk and saves the 3-panel result."""
     img = cv2.imread(image_path)
@@ -248,7 +295,7 @@ def detect_specific_jamming(image_path: str):
         print("Error: Could not load image.")
         return
 
-    output_img, mask_viz = _process_image(img)
+    output_img, mask_viz, _ = _process_image(img)
     fig = _make_figure(img, output_img, mask_viz)
 
     out_path = 'jamming_output.png'

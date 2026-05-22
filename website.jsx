@@ -868,6 +868,32 @@ const websiteHtml = String.raw`<!doctype html>
 			line-height: 1.6;
 		}
 
+		.assistant-card {
+			padding: 28px;
+		}
+
+		.assistant-shell {
+			margin-top: 18px;
+			display: grid;
+			gap: 12px;
+		}
+
+		.assist-frame-wrap {
+			border-radius: 20px;
+			border: 1px solid rgba(255, 255, 255, 0.08);
+			background: rgba(0, 0, 0, 0.2);
+			overflow: hidden;
+		}
+
+		#assistFrame {
+			display: block;
+			width: 100%;
+			height: min(78vh, 760px);
+			min-height: 600px;
+			border: 0;
+			background: #f1f3f6;
+		}
+
 		.footer-bar {
 			display: flex;
 			justify-content: space-between;
@@ -905,6 +931,7 @@ const websiteHtml = String.raw`<!doctype html>
 		html[data-theme="light"] .signal-chip,
 		html[data-theme="light"] .summary-panel,
 		html[data-theme="light"] .history-panel,
+			html[data-theme="light"] .assist-frame-wrap,
 		html[data-theme="light"] .workflow-item,
 		html[data-theme="light"] .preview-panel,
 		html[data-theme="light"] .summary-item,
@@ -914,6 +941,7 @@ const websiteHtml = String.raw`<!doctype html>
 		body[data-theme="light"] .signal-chip,
 		body[data-theme="light"] .summary-panel,
 		body[data-theme="light"] .history-panel,
+			body[data-theme="light"] .assist-frame-wrap,
 		body[data-theme="light"] .workflow-item,
 		body[data-theme="light"] .preview-panel,
 		body[data-theme="light"] .summary-item,
@@ -1006,7 +1034,8 @@ const websiteHtml = String.raw`<!doctype html>
 			.signal-panel,
 			.upload-card,
 			.result-card,
-			.info-card {
+			.info-card,
+			.assistant-card {
 				padding: 22px;
 			}
 
@@ -1029,6 +1058,10 @@ const websiteHtml = String.raw`<!doctype html>
 			.dropzone {
 				min-height: 220px;
 			}
+
+			#assistFrame {
+				min-height: 72vh;
+			}
 		}
 	</style>
 </head>
@@ -1045,6 +1078,7 @@ const websiteHtml = String.raw`<!doctype html>
 			<div class="nav-links">
 				<a href="#analyzer" id="navAnalyzer">Analyzer</a>
 				<a href="#workflow" id="navWorkflow">Workflow</a>
+				<a href="#assistant" id="navAssistant">Assistant</a>
 				<a href="/docs" id="navDocs">API Docs</a>
 				<select id="languageSelect" class="lang-select" aria-label="Language selector">
 					<option value="en">EN</option>
@@ -1287,8 +1321,24 @@ const websiteHtml = String.raw`<!doctype html>
 			</article>
 		</section>
 
+		<section class="section-grid" id="assistant">
+			<article class="card assistant-card" style="grid-column: 1 / -1;">
+				<h2 class="section-title">Trimble Assist</h2>
+				<p class="section-copy">
+					This panel embeds the working stage app.
+					Start that app with <code>npm run stage</code>, then this frame will load it.
+				</p>
+				<div class="assistant-shell">
+					<div class="status warn" id="assistStatus">Loading embedded Trimble Assist...</div>
+					<div class="assist-frame-wrap">
+						<iframe id="assistFrame" title="Trimble Assist embedded app" loading="lazy"></iframe>
+					</div>
+				</div>
+			</article>
+		</section>
+
 		<footer class="footer-bar">
-			<span>Terrasat Jamming Detection project UI</span>
+			<span>Terrasat Jamming Detection Project UI</span>
 			<span>Built against the current FastAPI detection service</span>
 		</footer>
 	</div>
@@ -1327,6 +1377,7 @@ const websiteHtml = String.raw`<!doctype html>
 		const languageSelect = document.getElementById("languageSelect");
 		const navAnalyzer = document.getElementById("navAnalyzer");
 		const navWorkflow = document.getElementById("navWorkflow");
+		const navAssistant = document.getElementById("navAssistant");
 		const navDocs = document.getElementById("navDocs");
 		const inputPreviewTitle = document.getElementById("inputPreviewTitle");
 		const resultPreviewTitle = document.getElementById("resultPreviewTitle");
@@ -1351,12 +1402,15 @@ const websiteHtml = String.raw`<!doctype html>
 		const summaryOutputSize = document.getElementById("summaryOutputSize");
 		const summaryTimestamp = document.getElementById("summaryTimestamp");
 		const summaryBandInfo = document.getElementById("summaryBandInfo");
+		const assistStatus = document.getElementById("assistStatus");
+		const assistFrame = document.getElementById("assistFrame");
 		const footerLeft = document.querySelector(".footer-bar span:first-child");
 		const footerRight = document.querySelector(".footer-bar span:last-child");
 
 		let selectedFile = null;
 		let inputPreviewUrl = null;
 		let resultPreviewUrl = null;
+		let latestAssistantUploadId = null;
 		let runCounter = 0;
 		let lastRunMeta = null;
 		const sessionHistory = [];
@@ -1369,6 +1423,7 @@ const websiteHtml = String.raw`<!doctype html>
 			en: {
 				navAnalyzer: "Analyzer",
 				navWorkflow: "Workflow",
+				navAssistant: "Assistant",
 				navDocs: "API Docs",
 				zoomPan: "Zoom/Pan",
 				inputPreview: "Input Preview",
@@ -1378,7 +1433,7 @@ const websiteHtml = String.raw`<!doctype html>
 				zoomViewer: "Zoom viewer",
 				zoomReset: "Reset",
 				zoomClose: "Close",
-				footerLeft: "Terrasat Jamming Detection project UI",
+				footerLeft: "Terrasat Jamming Detection Project UI",
 				footerRight: "Built against the current FastAPI detection service",
 				themeCurrent: "Current theme",
 				themeToLight: "Light theme",
@@ -1390,6 +1445,9 @@ const websiteHtml = String.raw`<!doctype html>
 				summaryBandInfoSource: "Source",
 				summaryBandInfoEndpoint: "Endpoint",
 				historyRunPrefix: "Run",
+				historyEmpty: "No completed analyses yet.",
+				filenameNone: "No file selected.",
+				statusWaiting: "Waiting for input",
 				statusReady: "Ready to analyze",
 				errorGuideDefault: "Validation and decode failures are shown directly in the status area.",
 				summaryStatusReady: "Ready",
@@ -1409,12 +1467,17 @@ const websiteHtml = String.raw`<!doctype html>
 				statusExportDone: "Export complete",
 				statusHistoryLoaded: "Loaded run",
 				statusHistoryCleared: "History cleared",
+				assistLoading: "Loading embedded Trimble Assist",
+				assistReady: "Trimble Assist is embedded",
+				assistNotConfigured: "Embed app URL is not configured",
+				assistUnreachable: "Embedded Trimble Assist app is not reachable",
 				backendHealthOk: "API reachable. The service responded with status ok.",
 				backendHealthFail: "API unavailable from the browser"
 			},
 			tr: {
 				navAnalyzer: "Analiz",
 				navWorkflow: "Is Akisi",
+				navAssistant: "Asistan",
 				navDocs: "API Dokuman",
 				zoomPan: "Yakinlastir/Kaydir",
 				inputPreview: "Girdi Onizleme",
@@ -1436,6 +1499,9 @@ const websiteHtml = String.raw`<!doctype html>
 				summaryBandInfoSource: "Kaynak",
 				summaryBandInfoEndpoint: "Ucta",
 				historyRunPrefix: "Calisma",
+				historyEmpty: "Henuz tamamlanan analiz yok.",
+				filenameNone: "Dosya secilmedi.",
+				statusWaiting: "Girdi bekleniyor",
 				statusReady: "Analize hazir",
 				errorGuideDefault: "Dogrulama ve decode hatalari dogrudan durum alaninda gosterilir.",
 				summaryStatusReady: "Hazir",
@@ -1455,12 +1521,17 @@ const websiteHtml = String.raw`<!doctype html>
 				statusExportDone: "Disa aktarma tamamlandi",
 				statusHistoryLoaded: "Gecmisten yuklendi",
 				statusHistoryCleared: "Gecmis temizlendi",
+				assistLoading: "Gomulu Trimble Assist yukleniyor",
+				assistReady: "Trimble Assist gomuldu",
+				assistNotConfigured: "Gomulu uygulama URL yapilandirilmamis",
+				assistUnreachable: "Gomulu Trimble Assist uygulamasina ulasilamiyor",
 				backendHealthOk: "API erisilebilir. Servis status ok dondu.",
 				backendHealthFail: "API tarayicidan erisilemiyor"
 			},
 			es: {
 				navAnalyzer: "Analizador",
 				navWorkflow: "Flujo",
+				navAssistant: "Asistente",
 				navDocs: "Docs API",
 				zoomPan: "Zoom/Desplazar",
 				inputPreview: "Vista de entrada",
@@ -1482,6 +1553,9 @@ const websiteHtml = String.raw`<!doctype html>
 				summaryBandInfoSource: "Fuente",
 				summaryBandInfoEndpoint: "Endpoint",
 				historyRunPrefix: "Ejecucion",
+				historyEmpty: "Aun no hay analisis completados.",
+				filenameNone: "Ningun archivo seleccionado.",
+				statusWaiting: "Esperando entrada",
 				statusReady: "Listo para analizar",
 				errorGuideDefault: "Los errores de validacion y decodificacion se muestran en el estado.",
 				summaryStatusReady: "Listo",
@@ -1501,12 +1575,17 @@ const websiteHtml = String.raw`<!doctype html>
 				statusExportDone: "Exportacion completada",
 				statusHistoryLoaded: "Ejecucion cargada",
 				statusHistoryCleared: "Historial limpiado",
+				assistLoading: "Cargando Trimble Assist embebido",
+				assistReady: "Trimble Assist esta embebido",
+				assistNotConfigured: "La URL de la app embebida no esta configurada",
+				assistUnreachable: "La app embebida de Trimble Assist no es accesible",
 				backendHealthOk: "API disponible. El servicio respondio con status ok.",
 				backendHealthFail: "API no disponible desde el navegador"
 			},
 			de: {
 				navAnalyzer: "Analyse",
 				navWorkflow: "Ablauf",
+				navAssistant: "Assistent",
 				navDocs: "API Doku",
 				zoomPan: "Zoom/Verschieben",
 				inputPreview: "Eingabevorschau",
@@ -1528,6 +1607,9 @@ const websiteHtml = String.raw`<!doctype html>
 				summaryBandInfoSource: "Quelle",
 				summaryBandInfoEndpoint: "Endpoint",
 				historyRunPrefix: "Lauf",
+				historyEmpty: "Noch keine abgeschlossenen Analysen.",
+				filenameNone: "Keine Datei ausgewaehlt.",
+				statusWaiting: "Warte auf Eingabe",
 				statusReady: "Bereit zur Analyse",
 				errorGuideDefault: "Validierungs- und Dekodierungsfehler werden im Statusbereich angezeigt.",
 				summaryStatusReady: "Bereit",
@@ -1547,6 +1629,10 @@ const websiteHtml = String.raw`<!doctype html>
 				statusExportDone: "Export abgeschlossen",
 				statusHistoryLoaded: "Lauf aus Verlauf geladen",
 				statusHistoryCleared: "Verlauf geleert",
+				assistLoading: "Eingebetteter Trimble Assist wird geladen",
+				assistReady: "Trimble Assist ist eingebettet",
+				assistNotConfigured: "URL der eingebetteten App ist nicht konfiguriert",
+				assistUnreachable: "Die eingebettete Trimble-Assist-App ist nicht erreichbar",
 				backendHealthOk: "API erreichbar. Dienst antwortete mit status ok.",
 				backendHealthFail: "API aus dem Browser nicht erreichbar"
 			}
@@ -1740,7 +1826,7 @@ const websiteHtml = String.raw`<!doctype html>
 
 		const STATIC_TRANSLATE_EXCLUDE_IDS = new Set([
 			"summaryRunId", "summaryStatus", "summaryInputDims", "summaryLatency", "summaryOutputSize", "summaryTimestamp",
-			"summaryBandInfo", "healthText", "errorGuide", "themeState", "filename", "statusBadge", "zoomModalTitle"
+			"summaryBandInfo", "healthText", "errorGuide", "themeState", "filename", "statusBadge", "zoomModalTitle", "assistStatus"
 		]);
 		let staticTextNodes = null;
 
@@ -1817,6 +1903,7 @@ const websiteHtml = String.raw`<!doctype html>
 			}
 			if (navAnalyzer) navAnalyzer.textContent = t("navAnalyzer");
 			if (navWorkflow) navWorkflow.textContent = t("navWorkflow");
+			if (navAssistant) navAssistant.textContent = t("navAssistant");
 			if (navDocs) navDocs.textContent = t("navDocs");
 			if (zoomInputButton) zoomInputButton.textContent = t("zoomPan");
 			if (zoomResultButton) zoomResultButton.textContent = t("zoomPan");
@@ -2048,6 +2135,32 @@ const websiteHtml = String.raw`<!doctype html>
 			}
 		}
 
+		async function uploadForAssistant(file) {
+			if (!file) {
+				return null;
+			}
+
+			const formData = new FormData();
+			formData.append("file", file);
+
+			try {
+				const response = await fetch("/assistant/upload-image", {
+					method: "POST",
+					body: formData,
+				});
+				if (!response.ok) {
+					throw new Error(response.status + " " + response.statusText);
+				}
+				const payload = await response.json();
+				latestAssistantUploadId = payload.uploadId || null;
+				return latestAssistantUploadId;
+			} catch (error) {
+				latestAssistantUploadId = null;
+				console.warn("Assistant upload sync failed", error);
+				return null;
+			}
+		}
+
 		function selectFile(file) {
 			if (!file) {
 				return;
@@ -2059,6 +2172,7 @@ const websiteHtml = String.raw`<!doctype html>
 			errorGuide.textContent = t("errorGuideDefault");
 			clearResult();
 			updateInputPreview(file);
+			void uploadForAssistant(file);
 			exportButton.disabled = true;
 			updateSummary({
 				runId: runCounter + 1,
@@ -2105,6 +2219,9 @@ const websiteHtml = String.raw`<!doctype html>
 
 			const formData = new FormData();
 			formData.append("file", selectedFile);
+			if (!latestAssistantUploadId) {
+				await uploadForAssistant(selectedFile);
+			}
 
 			analyzeButton.disabled = true;
 			analyzeButton.style.opacity = "0.72";
@@ -2322,7 +2439,39 @@ const websiteHtml = String.raw`<!doctype html>
 			}
 		}
 
+		function setAssistStatus(text, tone) {
+			if (!assistStatus) {
+				return;
+			}
+			assistStatus.textContent = text;
+			assistStatus.className = "status";
+			assistStatus.classList.add(tone || "warn");
+		}
+
+		async function initAssistFrame() {
+			setAssistStatus(t("assistLoading"), "warn");
+			try {
+				const response = await fetch("/trimble-assist-config");
+				if (!response.ok) {
+					throw new Error(response.status + " " + response.statusText);
+				}
+				const cfg = await response.json();
+				if (!cfg || !cfg.enabled || !cfg.appUrl) {
+					setAssistStatus(t("assistNotConfigured"), "warn");
+					return;
+				}
+				if (assistFrame) {
+					assistFrame.src = String(cfg.appUrl);
+					setAssistStatus(t("assistReady"), "ok");
+				}
+			} catch (error) {
+				const msg = error && error.message ? ": " + error.message : "";
+				setAssistStatus(t("assistUnreachable") + msg, "error");
+			}
+		}
+
 		checkHealth();
+		initAssistFrame();
 		renderHistory();
 		updateSummary(null);
 		applyLanguage(getInitialLanguage());
